@@ -17,58 +17,83 @@ async function fetchTournamentResults(tournamentId) {
   const text = await res.text();
   const players = text.trim().split('\n').map(line => JSON.parse(line));
 
+  // Collect scores by team
   const teamScores = {};
 
   for (const player of players) {
     const team = player.team || 'No team';
-    teamScores[team] = (teamScores[team] || 0) + (player.score || 0);
+    if (!teamScores[team]) {
+      teamScores[team] = [];
+    }
+    teamScores[team].push(player.score || 0);
   }
 
-  // Convert team scores into sorted array
-  const sortedTeams = Object.entries(teamScores)
-    .sort((a, b) => b[1] - a[1])
-    .map(([team], index) => ({
-      team,
-      tournamentPoints: SCORING[index] || 0
-    }));
+  // Keep only top 3 scores per team
+  const top3TeamTotals = Object.entries(teamScores).map(([team, scores]) => {
+    const top3 = scores.sort((a, b) => b - a).slice(0, 3);
+    const total = top3.reduce((sum, s) => sum + s, 0);
+    return { team, total };
+  });
 
-  return sortedTeams;
+  // Sort teams by their top-3 totals
+  const rankedTeams = top3TeamTotals.sort((a, b) => b.total - a.total);
+
+  // Assign placement points
+  return rankedTeams.map(({ team }, index) => ({
+    team,
+    points: SCORING[index] || 0
+  }));
 }
 
-async function buildOverallLeaderboard() {
+async function buildDetailedLeaderboard() {
   const tournaments = await fetchTournaments();
-  const overall = {};
+  const leaderboard = {}; // { team: { total: number, [roundX]: number } }
 
-  for (const tournamentId of tournaments) {
-    const tournamentLeaders = await fetchTournamentResults(tournamentId);
-    for (const { team, tournamentPoints } of tournamentLeaders) {
-      overall[team] = (overall[team] || 0) + tournamentPoints;
+  for (let i = 0; i < tournaments.length; i++) {
+    const tournamentId = tournaments[i];
+    const roundKey = `R${i + 1}`;
+    const results = await fetchTournamentResults(tournamentId);
+
+    for (const { team, points } of results) {
+      if (!leaderboard[team]) {
+        leaderboard[team] = { total: 0 };
+      }
+      leaderboard[team][roundKey] = points;
+      leaderboard[team].total += points;
     }
   }
 
-  return Object.entries(overall)
-    .sort((a, b) => b[1] - a[1]); // Sort by total points
+  return { leaderboard, roundLabels: tournaments.map((_, i) => `R${i + 1}`) };
 }
 
-async function displayOverallLeaderboard() {
-  const leaderboard = await buildOverallLeaderboard();
+async function displayLeaderboardTable() {
+  const { leaderboard, roundLabels } = await buildDetailedLeaderboard();
+  const sorted = Object.entries(leaderboard)
+    .sort((a, b) => b[1].total - a[1].total);
+
   const container = document.getElementById('results');
+
   const table = document.createElement('table');
+  const headers = ['Rank', 'Team', ...roundLabels, 'Total'];
   table.innerHTML = `
     <thead>
-      <tr><th>Rank</th><th>Team</th><th>Total Points</th></tr>
+      <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
     </thead>
     <tbody>
-      ${leaderboard.map(([team, points], i) => `
-        <tr>
-          <td>${i + 1}</td>
-          <td>${team}</td>
-          <td>${points}</td>
-        </tr>
-      `).join('')}
+      ${sorted.map(([team, scores], idx) => {
+        const roundCells = roundLabels.map(r => `<td>${scores[r] || 0}</td>`).join('');
+        return `
+          <tr>
+            <td>${idx + 1}</td>
+            <td>${team}</td>
+            ${roundCells}
+            <td>${scores.total}</td>
+          </tr>
+        `;
+      }).join('')}
     </tbody>
   `;
   container.appendChild(table);
 }
 
-displayOverallLeaderboard();
+displayLeaderboardTable();
